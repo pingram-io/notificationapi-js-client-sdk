@@ -26,7 +26,7 @@ jobs:
 
       - name: NPM Install
         if: steps.cache-modules.outputs.cache-hit != 'true'
-        run: npm install
+        run: npm ci
 
       - name: Lint
         run: npm run-script lint
