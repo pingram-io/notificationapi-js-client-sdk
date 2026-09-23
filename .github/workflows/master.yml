@@ -15,14 +15,14 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v3
         with:
-          node-version: 18.17
+          node-version: 20.19
 
       - name: Cache node_modules
         id: cache-modules
         uses: actions/cache@v1
         with:
           path: node_modules
-          key: 18.17.x-${{ runner.OS }}-build-${{ hashFiles('package.json') }}
+          key: 20.19.x-${{ runner.OS }}-build-${{ hashFiles('package.json') }}
 
       - name: NPM Install
         if: steps.cache-modules.outputs.cache-hit != 'true'

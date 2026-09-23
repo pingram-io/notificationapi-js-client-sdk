@@ -1,4 +1,3 @@
-import { faker } from '@faker-js/faker';
 import { InappNotification } from '../interfaces';
 
 export const generateFakeNotifications = (
@@ -9,11 +8,9 @@ export const generateFakeNotifications = (
     result.push({
       id: 'fake-' + index.toString(),
       seen: false,
-      title:
-        `<b>${faker.name.firstName()}</b> posted an update: ${faker.lorem.sentence()}` +
-        index,
+      title: `<b>Ada</b> posted an update: A notification arrived.` + index,
       redirectURL: '#',
-      imageURL: faker.image.avatar(),
+      imageURL: 'https://example.com/avatar.png',
       date: new Date(new Date().getTime() - index * 3600).toISOString()
     });
   }
