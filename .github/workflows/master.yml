@@ -22,7 +22,7 @@ jobs:
         uses: actions/cache@v6
         with:
           path: node_modules
-          key: 20.x-${{ runner.OS }}-build-${{ hashFiles('package.json') }}
+          key: 20.x-${{ runner.OS }}-build-${{ hashFiles('package-lock.json') }}
 
       - name: NPM Install
         if: steps.cache-modules.outputs.cache-hit != 'true'
