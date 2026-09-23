@@ -1,3 +1,4 @@
+import NotificationAPI from '../index';
 import '../assets/styles.css';
 import { generateFakeNotifications } from './FakeNotificationGenerator';
 import { MarkAsReadModes } from '../interfaces';
@@ -10,7 +11,7 @@ export default {
 };
 
 const Component = ({ ...args }) => {
-  window.NotificationAPI = require('../index').default;
+  Object.assign(window, { NotificationAPI });
   return `<div id="our-root"></div>
           <BR><BR>
           <script>

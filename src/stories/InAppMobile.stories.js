@@ -1,4 +1,5 @@
-import { INITIAL_VIEWPORTS } from '@storybook/addon-viewport';
+import NotificationAPI from '../index';
+import { INITIAL_VIEWPORTS } from 'storybook/viewport';
 import { generateFakeNotifications } from './FakeNotificationGenerator';
 import '../assets/styles.css';
 
@@ -6,13 +7,13 @@ export default {
   title: 'InApp/Mobile',
   parameters: {
     viewport: {
-      viewports: INITIAL_VIEWPORTS
+      options: INITIAL_VIEWPORTS
     }
   }
 };
 
 const Template = ({ ...args }) => {
-  window.NotificationAPI = require('../index').default;
+  Object.assign(window, { NotificationAPI });
   return `<div id="our-root"></div>
           <BR><BR>
           <script>

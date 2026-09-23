@@ -8,5 +8,13 @@
     "plugin:@typescript-eslint/recommended",
     "plugin:security/recommended"
   ],
-  "ignorePatterns": ["examples/*"]
+  "ignorePatterns": ["examples/*"],
+  "overrides": [
+    {
+      "files": ["src/stories/**/*.js"],
+      "env": {
+        "browser": true
+      }
+    }
+  ]
 }

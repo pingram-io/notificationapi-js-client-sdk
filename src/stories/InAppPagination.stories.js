@@ -1,18 +1,19 @@
+import NotificationAPI from '../index';
 import '../assets/styles.css';
-import { INITIAL_VIEWPORTS } from '@storybook/addon-viewport';
+import { INITIAL_VIEWPORTS } from 'storybook/viewport';
 import { generateFakeNotifications } from './FakeNotificationGenerator';
 
 export default {
   title: 'InApp/Paginated',
   parameters: {
     viewport: {
-      viewports: INITIAL_VIEWPORTS
+      options: INITIAL_VIEWPORTS
     }
   }
 };
 
 const Component = ({ ...args }) => {
-  window.NotificationAPI = require('../index').default;
+  Object.assign(window, { NotificationAPI });
   return `<div id="our-root"></div>
           <BR><BR>
           <script>

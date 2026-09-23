@@ -1,11 +1,12 @@
-import { INITIAL_VIEWPORTS } from '@storybook/addon-viewport';
+import NotificationAPI from '../index';
+import { INITIAL_VIEWPORTS } from 'storybook/viewport';
 import '../assets/styles.css';
 import { generateFakeNotifications } from './FakeNotificationGenerator';
 export default {
   title: 'InApp/Positioning',
   parameters: {
     viewport: {
-      viewports: INITIAL_VIEWPORTS
+      options: INITIAL_VIEWPORTS
     },
     layout: 'centered'
   },
@@ -29,7 +30,7 @@ export default {
 };
 
 const Template2 = ({ ...args }) => {
-  window.NotificationAPI = require('../index').default;
+  Object.assign(window, { NotificationAPI });
   return `<div id="our-root"></div>
           <BR><BR>
 
