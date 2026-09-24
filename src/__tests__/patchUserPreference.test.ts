@@ -43,6 +43,13 @@ test('posts a preference update', () => {
   ]);
 });
 
+test('logs when the preference update fails', async () => {
+  (global.fetch as jest.Mock).mockRejectedValue(new Error('save failed'));
+  notificationapi.patchUserPreference('notificationId', 'channel', false);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(spy).toHaveBeenCalledWith(new Error('save failed'));
+});
+
 test('posts a preference update with subNotificationId', () => {
   notificationapi.patchUserPreference(
     'notificationId',

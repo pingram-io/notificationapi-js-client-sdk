@@ -130,6 +130,43 @@ afterEach(() => {
   if (notificationapi) notificationapi.destroy();
 });
 
+describe('rest failures', () => {
+  test('logs when loading in-app notifications fails', async () => {
+    (global.fetch as jest.Mock).mockRejectedValue(new Error('load failed'));
+    notificationapi.showInApp({ root: 'root' });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(spy).toHaveBeenCalledWith(new Error('load failed'));
+  });
+
+  test('logs when clearing unread fails', async () => {
+    (global.fetch as jest.Mock).mockImplementation(async (_url, init) => {
+      if (init?.method === 'PATCH') throw new Error('clear failed');
+      return restResponse({ count: 0, notifications: [] });
+    });
+    notificationapi.showInApp({ root: 'root' });
+    $('.notificationapi-button').trigger('click');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(spy).toHaveBeenCalledWith(new Error('clear failed'));
+  });
+
+  test('treats a notification response without a list as empty', async () => {
+    const handler = jest.spyOn(
+      notificationapi.websocketHandlers,
+      'notifications'
+    );
+    (global.fetch as jest.Mock).mockImplementation(async (url: string) => {
+      if (String(url).includes('/unread')) return restResponse({ count: 0 });
+      return restResponse({});
+    });
+    notificationapi.showInApp({ root: 'root' });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(handler).toHaveBeenCalledWith({
+      route: 'inapp_web/notifications',
+      payload: { notifications: [] }
+    });
+  });
+});
+
 describe('defaults', () => {
   test('given bad root element shows error', () => {
     notificationapi.showInApp({
