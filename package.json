@@ -1,6 +1,6 @@
 {
   "name": "notificationapi-js-client-sdk",
-  "version": "4.7.1",
+  "version": "5.0.0",
   "description": "NotificationAPI client-side library for JavaScript",
   "keywords": [
     "notificationapi",
