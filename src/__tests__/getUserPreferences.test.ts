@@ -33,7 +33,6 @@ afterEach(() => {
 describe('given connection is already open', () => {
   beforeEach(async () => {
     await server.connected;
-    await server.nextMessage; // environment/data request
   });
 
   test('sends a user_preferences/preferences message', async () => {
@@ -80,7 +79,7 @@ describe('given connection is already open', () => {
 
 describe('given connection is not open yet', () => {
   test('sends request and resolves after connection is open', async () => {
-    await server.nextMessage; // environment/data request
+    await server.connected;
     const response: WS_UserPreferencesResponse = {
       route: 'user_preferences/preferences',
       payload: {

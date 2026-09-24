@@ -1,7 +1,6 @@
 import $ from 'jquery';
 import {
   NotificationAPIClientInterface,
-  WS_EnvironmentDataResponse,
   WS_UnreadCountResponse,
   WS_UserPreferencesPatchRequest,
   WS_UserPreferencesRequest,
@@ -135,49 +134,6 @@ describe('default elements and interactions', () => {
       $('.notificationapi-preferences-popup > .notificationapi-loading')
     ).toHaveLength(1);
   });
-  test('when askForWebPushPermission is true the web push permission opt in message is added', async () => {
-    await server.connected;
-    const res: WS_EnvironmentDataResponse = {
-      route: 'environment/data',
-      payload: {
-        logo: 'string',
-        applicationServerKey: 'string',
-        askForWebPushPermission: true
-      }
-    };
-    server.send(res);
-    notificationapi.showUserPreferences();
-    notificationapi.renderPreferences([emailInAppPreference]);
-    expect(
-      $(
-        '.notificationapi-preferences-popup > .notificationapi-preferences-web-push-opt-in'
-      )
-    ).toHaveLength(1);
-  });
-  test('when askForWebPushPermission is true the web push permission message is clicked and askForWebPushPermission is called', async () => {
-    // Create a spy for the method
-    const mockAskForWebPushPermission = jest.spyOn(
-      notificationapi,
-      'askForWebPushPermission'
-    );
-    await server.connected;
-    const res: WS_EnvironmentDataResponse = {
-      route: 'environment/data',
-      payload: {
-        logo: 'string',
-        applicationServerKey: 'string',
-        askForWebPushPermission: true
-      }
-    };
-    server.send(res);
-    // Run your methods
-    notificationapi.showUserPreferences();
-    notificationapi.renderPreferences([emailInAppPreference]);
-    $('.notificationapi-preferences-web-push-opt-in').trigger('click');
-
-    // Expect the spy to have been called
-    expect(mockAskForWebPushPermission).toHaveBeenCalled();
-  });
 });
 
 describe('inline mode', () => {
@@ -209,7 +165,6 @@ describe('websocket send & receives', () => {
   });
 
   test('given WS is not open, requests user_preferences after it is opened', async () => {
-    await server.nextMessage; // environment/data request
     notificationapi.showUserPreferences();
     const req1: WS_UserPreferencesRequest = {
       route: 'user_preferences/get_preferences'
@@ -219,7 +174,6 @@ describe('websocket send & receives', () => {
 
   test('given WS is open, requests user_preferences', async () => {
     await server.connected; // ensuring WS is open
-    await server.nextMessage; // environment/data request
     notificationapi.showUserPreferences();
     const req1: WS_UserPreferencesRequest = {
       route: 'user_preferences/get_preferences'
@@ -267,7 +221,6 @@ describe('websocket send & receives', () => {
 
   test('given preference, clicking toggle changes the toggle and sends correct patch request', async () => {
     notificationapi.showUserPreferences();
-    await server.nextMessage;
     await server.nextMessage;
     notificationapi.renderPreferences([emailInAppPreference]);
     $(
@@ -321,16 +274,6 @@ describe('websocket send & receives', () => {
 
   test('given preference, clicking subtoggle changes the subtoggle and sends correct patch request', async () => {
     notificationapi.showUserPreferences();
-    await expect(server).toReceiveMessage({ route: 'environment/data' });
-    const res: WS_EnvironmentDataResponse = {
-      route: 'environment/data',
-      payload: {
-        logo: '',
-        applicationServerKey: '',
-        askForWebPushPermission: true
-      }
-    };
-    server.send(res);
     await server.nextMessage;
     notificationapi.renderPreferences([
       {
@@ -452,7 +395,7 @@ describe('renderPreferences', () => {
       )
     ).toHaveLength(1);
   });
-  test('given preference, adds grid to popup, no askForWebPushPermission', () => {
+  test('given preference, adds grid to popup and no extra message', () => {
     notificationapi.showUserPreferences();
     notificationapi.renderPreferences([emailInAppPreference]);
     expect(
@@ -763,28 +706,5 @@ describe('renderPreferences', () => {
     expect($('.notificationapi-preferences-title')[0].innerHTML).toEqual(
       'title2'
     );
-  });
-});
-
-describe('When webPushSettings handler is triggered', () => {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  let originalNotification: any;
-
-  beforeEach(() => {
-    // Save original Notification
-    originalNotification = global.Notification;
-
-    // Mock the global Notification object
-    Object.defineProperty(global, 'Notification', {
-      value: {
-        permission: 'granted'
-      },
-      writable: true
-    });
-  });
-
-  afterEach(() => {
-    // Reset global.Notification to its original value
-    global.Notification = originalNotification;
   });
 });
