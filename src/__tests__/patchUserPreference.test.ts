@@ -1,8 +1,4 @@
-import {
-  NotificationAPIClientInterface,
-  WS_UserPreferencesPatchRequest
-} from '../interfaces';
-import WS from 'jest-websocket-mock';
+import { NotificationAPIClientInterface } from '../interfaces';
 import NotificationAPI from '../index';
 
 const clientId = 'envId@';
@@ -10,66 +6,64 @@ const userId = 'userId@';
 
 let spy: jest.SpyInstance;
 let notificationapi: NotificationAPIClientInterface;
-let server: WS;
 
 beforeEach(() => {
   spy = jest.spyOn(console, 'error').mockImplementation();
-  server = new WS('ws://localhost:1236', { jsonProtocol: true });
+  global.fetch = jest.fn().mockResolvedValue({
+    ok: true,
+    status: 200,
+    text: async () => ''
+  });
   notificationapi = new NotificationAPI({
     clientId,
     userId,
-    websocket: 'ws://localhost:1236'
+    websocket: false
   });
 });
 
 afterEach(() => {
-  WS.clean();
   spy.mockRestore();
   if (notificationapi) notificationapi.destroy();
 });
 
-test('sends a user_preferences/patch message', async () => {
-  await server.nextMessage; // environment/data request
+test('posts a preference update', () => {
   notificationapi.patchUserPreference('notificationId', 'channel', false);
-  const request: WS_UserPreferencesPatchRequest = {
-    route: 'user_preferences/patch_preferences',
-    payload: [
-      {
-        notificationId: 'notificationId',
-        channelPreferences: [
-          {
-            channel: 'channel',
-            state: false
-          }
-        ]
-      }
-    ]
-  };
-  await expect(server).toReceiveMessage(request);
+  const call = (global.fetch as jest.Mock).mock.calls[0];
+  expect(call[0]).toEqual(
+    'https://api.notificationapi.com/enduser/preferences'
+  );
+  expect(call[1].method).toEqual('POST');
+  expect(JSON.parse(call[1].body)).toEqual([
+    {
+      notificationId: 'notificationId',
+      subNotificationId: '',
+      channel: 'channel',
+      state: false
+    }
+  ]);
 });
 
-test('sends a user_preferences/patch message with subNotificationId', async () => {
-  await server.nextMessage; // environment/data request
+test('logs when the preference update fails', async () => {
+  (global.fetch as jest.Mock).mockRejectedValue(new Error('save failed'));
+  notificationapi.patchUserPreference('notificationId', 'channel', false);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(spy).toHaveBeenCalledWith(new Error('save failed'));
+});
+
+test('posts a preference update with subNotificationId', () => {
   notificationapi.patchUserPreference(
     'notificationId',
     'channel',
     false,
     'subNotificationId'
   );
-  const request: WS_UserPreferencesPatchRequest = {
-    route: 'user_preferences/patch_preferences',
-    payload: [
-      {
-        notificationId: 'notificationId',
-        subNotificationId: 'subNotificationId',
-        channelPreferences: [
-          {
-            channel: 'channel',
-            state: false
-          }
-        ]
-      }
-    ]
-  };
-  await expect(server).toReceiveMessage(request);
+  const call = (global.fetch as jest.Mock).mock.calls[0];
+  expect(JSON.parse(call[1].body)).toEqual([
+    {
+      notificationId: 'notificationId',
+      subNotificationId: 'subNotificationId',
+      channel: 'channel',
+      state: false
+    }
+  ]);
 });

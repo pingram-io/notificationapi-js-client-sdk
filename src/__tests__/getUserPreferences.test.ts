@@ -1,10 +1,4 @@
-import {
-  NotificationAPIClientInterface,
-  WS_UnreadCountResponse,
-  WS_UserPreferencesRequest,
-  WS_UserPreferencesResponse
-} from '../interfaces';
-import WS from 'jest-websocket-mock';
+import { NotificationAPIClientInterface } from '../interfaces';
 import NotificationAPI from '../index';
 
 const clientId = 'envId@';
@@ -12,114 +6,253 @@ const userId = 'userId@';
 
 let spy: jest.SpyInstance;
 let notificationapi: NotificationAPIClientInterface;
-let server: WS;
+
+const emptyPreferences = {
+  preferences: [],
+  notifications: [],
+  subNotifications: []
+};
 
 beforeEach(() => {
   spy = jest.spyOn(console, 'error').mockImplementation();
-  server = new WS('ws://localhost:1235', { jsonProtocol: true });
+  global.fetch = jest.fn().mockResolvedValue({
+    ok: true,
+    status: 200,
+    text: async () => JSON.stringify(emptyPreferences)
+  });
   notificationapi = new NotificationAPI({
     clientId,
     userId,
-    websocket: 'ws://localhost:1235'
+    websocket: false
   });
 });
 
 afterEach(() => {
-  WS.clean();
   spy.mockRestore();
   if (notificationapi) notificationapi.destroy();
 });
 
-describe('given connection is already open', () => {
-  beforeEach(async () => {
-    await server.connected;
-    await server.nextMessage; // environment/data request
+test('sends the user hash and uses a custom REST host', async () => {
+  const hashed = new NotificationAPI({
+    clientId,
+    userId,
+    userIdHash: 'hash',
+    restBaseURL: 'https://api.pingram.io',
+    websocket: false
   });
-
-  test('sends a user_preferences/preferences message', async () => {
-    notificationapi.getUserPreferences();
-    const request: WS_UserPreferencesRequest = {
-      route: 'user_preferences/get_preferences'
-    };
-    await expect(server).toReceiveMessage(request);
-  });
-
-  test('resolves and returns the payload of the user_preferences response', async () => {
-    const response: WS_UserPreferencesResponse = {
-      route: 'user_preferences/preferences',
-      payload: {
-        userPreferences: []
-      }
-    };
-    server.nextMessage.then(() => server.send(response));
-    const result = await notificationapi.getUserPreferences();
-    expect(result).toEqual([]);
-  });
-
-  test('does not resolve with other messages', async () => {
-    const response1: WS_UnreadCountResponse = {
-      route: 'inapp_web/unread_count',
-      payload: {
-        count: 0
-      }
-    };
-    const response2: WS_UserPreferencesResponse = {
-      route: 'user_preferences/preferences',
-      payload: {
-        userPreferences: []
-      }
-    };
-    notificationapi.getUserPreferences().then((result) => {
-      expect(result).toEqual([]);
-    });
-    await server.send(response1);
-    await new Promise((resolve) => setTimeout(resolve, 200));
-    await server.send(response2);
-  });
+  await hashed.getUserPreferences();
+  expect((global.fetch as jest.Mock).mock.calls[0][0]).toEqual(
+    'https://api.pingram.io/enduser/preferences'
+  );
+  expect(
+    (global.fetch as jest.Mock).mock.calls[0][1].headers.Authorization
+  ).toEqual('Basic ' + btoa(`${clientId}:${userId}:hash`));
+  hashed.destroy();
 });
 
-describe('given connection is not open yet', () => {
-  test('sends request and resolves after connection is open', async () => {
-    await server.nextMessage; // environment/data request
-    const response: WS_UserPreferencesResponse = {
-      route: 'user_preferences/preferences',
-      payload: {
-        userPreferences: []
-      }
-    };
-    server.nextMessage.then((message) => {
-      expect(message).toEqual({
-        route: 'user_preferences/get_preferences'
-      });
-      server.send(response);
-    });
-    const result = await notificationapi.getUserPreferences();
-    expect(result).toEqual([]);
-  });
+test('requests GET /enduser/preferences', async () => {
+  await notificationapi.getUserPreferences();
+  expect((global.fetch as jest.Mock).mock.calls[0][0]).toEqual(
+    'https://api.notificationapi.com/enduser/preferences'
+  );
+  expect((global.fetch as jest.Mock).mock.calls[0][1].method).toEqual('GET');
+  expect(
+    (global.fetch as jest.Mock).mock.calls[0][1].headers.Authorization
+  ).toEqual('Basic ' + btoa(`${clientId}:${userId}:`));
 });
 
-describe('given no websocket', () => {
-  test('rejects the promise when websocket is not present', async () => {
-    notificationapi = new NotificationAPI({
-      clientId: '',
-      userId: '',
-      websocket: false
-    });
-    await expect(notificationapi.getUserPreferences()).rejects.toEqual(
-      'Websocket is not present.'
-    );
+test('maps sub-notifications and drops web push', async () => {
+  (global.fetch as jest.Mock).mockResolvedValue({
+    ok: true,
+    status: 200,
+    text: async () =>
+      JSON.stringify({
+        preferences: [
+          {
+            notificationId: 'n1',
+            channel: 'EMAIL',
+            delivery: 'instant'
+          },
+          {
+            notificationId: 'n1',
+            channel: 'FAX',
+            delivery: 'daily'
+          },
+          {
+            notificationId: 'n1',
+            subNotificationId: 's1',
+            channel: 'SMS',
+            delivery: 'off'
+          },
+          {
+            notificationId: 'n1',
+            subNotificationId: 's1',
+            channel: 'WEB_PUSH',
+            delivery: 'instant'
+          }
+        ],
+        notifications: [{ notificationId: 'n1', title: 'Hello' }],
+        subNotifications: [
+          {
+            notificationId: 'other',
+            subNotificationId: 'nope',
+            title: 'Ignored'
+          },
+          {
+            notificationId: 'n1',
+            subNotificationId: 's1',
+            title: 'Sub'
+          }
+        ]
+      })
   });
-  test('rejects the promise when websocket fails to open', async () => {
-    // Mocking a websocket connection that will not open
-    server.error(); // Simulate an error that prevents websocket from opening
-    notificationapi = new NotificationAPI({
-      clientId,
-      userId,
-      websocket: 'ws://localhost:1235'
-    });
-    // Wait for the getUserPreferences method to be invoked and handle the rejection
-    await expect(notificationapi.getUserPreferences()).rejects.toEqual(
-      'Websocket failed to open.'
-    );
+  await expect(notificationapi.getUserPreferences()).resolves.toEqual([
+    {
+      notificationId: 'n1',
+      title: 'Hello',
+      settings: [
+        { channel: 'EMAIL', channelName: 'Email', state: true },
+        { channel: 'FAX', channelName: 'FAX', state: true }
+      ],
+      subNotificationPreferences: [
+        {
+          notificationId: 'n1',
+          subNotificationId: 's1',
+          title: 'Sub',
+          settings: [{ channel: 'SMS', channelName: 'SMS', state: false }]
+        }
+      ]
+    }
+  ]);
+});
+
+test('treats missing preference arrays as empty', async () => {
+  (global.fetch as jest.Mock).mockResolvedValue({
+    ok: true,
+    status: 200,
+    text: async () =>
+      JSON.stringify({
+        notifications: [{ notificationId: 'n1', title: 'Hello' }]
+      })
   });
+  await expect(notificationapi.getUserPreferences()).resolves.toEqual([
+    {
+      notificationId: 'n1',
+      title: 'Hello',
+      settings: []
+    }
+  ]);
+});
+
+test('maps sub-notifications when preference rows are missing', async () => {
+  (global.fetch as jest.Mock).mockResolvedValue({
+    ok: true,
+    status: 200,
+    text: async () =>
+      JSON.stringify({
+        notifications: [{ notificationId: 'n1', title: 'Hello' }],
+        subNotifications: [
+          {
+            notificationId: 'n1',
+            subNotificationId: 's1',
+            title: 'Sub'
+          }
+        ]
+      })
+  });
+  await expect(notificationapi.getUserPreferences()).resolves.toEqual([
+    {
+      notificationId: 'n1',
+      title: 'Hello',
+      settings: [],
+      subNotificationPreferences: [
+        {
+          notificationId: 'n1',
+          subNotificationId: 's1',
+          title: 'Sub',
+          settings: []
+        }
+      ]
+    }
+  ]);
+});
+
+test('treats a missing notification list as empty', async () => {
+  (global.fetch as jest.Mock).mockResolvedValue({
+    ok: true,
+    status: 200,
+    text: async () => JSON.stringify({})
+  });
+  await expect(notificationapi.getUserPreferences()).resolves.toEqual([]);
+});
+
+test('rejects with the API error message', async () => {
+  (global.fetch as jest.Mock).mockResolvedValue({
+    ok: false,
+    status: 400,
+    text: async () => JSON.stringify({ error: 'Invalid request body' })
+  });
+  await expect(notificationapi.getUserPreferences()).rejects.toThrow(
+    'Invalid request body'
+  );
+});
+
+test('rejects with the status when the error is not a string', async () => {
+  (global.fetch as jest.Mock).mockResolvedValue({
+    ok: false,
+    status: 400,
+    text: async () => JSON.stringify({ error: { message: 'nope' } })
+  });
+  await expect(notificationapi.getUserPreferences()).rejects.toThrow(
+    'Request failed (400)'
+  );
+});
+
+test('rejects with the status when the error body has no message', async () => {
+  (global.fetch as jest.Mock).mockResolvedValue({
+    ok: false,
+    status: 500,
+    text: async () => ''
+  });
+  await expect(notificationapi.getUserPreferences()).rejects.toThrow(
+    'Request failed (500)'
+  );
+});
+
+test('returns preferences mapped from the REST payload', async () => {
+  (global.fetch as jest.Mock).mockResolvedValue({
+    ok: true,
+    status: 200,
+    text: async () =>
+      JSON.stringify({
+        preferences: [
+          {
+            notificationId: 'welcome',
+            channel: 'EMAIL',
+            delivery: 'off'
+          }
+        ],
+        notifications: [
+          {
+            notificationId: 'welcome',
+            title: 'Welcome'
+          }
+        ],
+        subNotifications: []
+      })
+  });
+  const result = await notificationapi.getUserPreferences();
+  expect(result).toEqual([
+    {
+      notificationId: 'welcome',
+      title: 'Welcome',
+      settings: [
+        {
+          channel: 'EMAIL',
+          channelName: 'Email',
+          state: false
+        }
+      ]
+    }
+  ]);
 });

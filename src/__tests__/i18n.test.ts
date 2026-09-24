@@ -1,20 +1,21 @@
 import $ from 'jquery';
-import {
-  NotificationAPIClientInterface,
-  WS_NotificationsResponse
-} from '../interfaces';
+import { NotificationAPIClientInterface } from '../interfaces';
 import WS from 'jest-websocket-mock';
 import NotificationAPI from '../index';
 
 const clientId = 'envId@';
 const userId = 'userId@';
 let notificationapi: NotificationAPIClientInterface;
-let server: WS;
 beforeEach(() => {
   document.body.innerHTML =
     '<div id="root"></div><div id="root2"></div><div id="somethingelse">somethingelse</div>';
 
-  server = new WS('ws://localhost:1234', { jsonProtocol: true });
+  new WS('ws://localhost:1234', { jsonProtocol: true });
+  global.fetch = jest.fn().mockResolvedValue({
+    ok: true,
+    status: 200,
+    text: async () => JSON.stringify({ count: 0, notifications: [] })
+  });
 });
 
 afterEach(() => {
@@ -32,11 +33,10 @@ describe('Support multiple languages', () => {
     notificationapi.showInApp({
       root: 'root'
     });
-    const message: WS_NotificationsResponse = {
+    notificationapi.websocketHandlers.notifications({
       route: 'inapp_web/notifications',
       payload: { notifications: [] }
-    };
-    server.send(message);
+    });
     expect($('.notificationapi-empty').text()).toBe(
       "You don't have any notifications!"
     );
@@ -51,11 +51,10 @@ describe('Support multiple languages', () => {
     notificationapi.showInApp({
       root: 'root'
     });
-    const message: WS_NotificationsResponse = {
+    notificationapi.websocketHandlers.notifications({
       route: 'inapp_web/notifications',
       payload: { notifications: [] }
-    };
-    server.send(message);
+    });
     expect($('.notificationapi-empty').text()).toBe(
       '¡No tienes ninguna notificación!'
     );

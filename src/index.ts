@@ -7,20 +7,15 @@ import {
   Preference,
   MarkAsReadModes,
   UserPreferencesOptions,
-  WS_ANY_VALID_REQUEST,
   WS_NewNotificationsResponse,
-  WS_NotificationsRequest,
   WS_NotificationsResponse,
   WS_UnreadCountResponse,
-  WS_UserPreferencesPatchRequest,
   WS_UserPreferencesResponse,
-  WS_EnvironmentDataResponse,
   UserParams,
   TranslationObject,
   SupportedLanguages
 } from './interfaces';
 import timeAgo from './utils/timeAgo';
-import { PushSubscription } from './interfaces';
 import i18n from 'i18next';
 import enUS from './assets/i18n/en-US.json';
 import esES from './assets/i18n/es-ES.json';
@@ -51,6 +46,78 @@ const supportedLanguagesFile: {
   'pt-BR': ptBR
 };
 const PAGE_SIZE = 5;
+const channelNames: Record<string, string> = {
+  EMAIL: 'Email',
+  INAPP_WEB: 'In-App',
+  SMS: 'SMS',
+  CALL: 'Call',
+  PUSH: 'Push',
+  SLACK: 'Slack'
+};
+
+interface RestPreferencesResponse {
+  preferences: {
+    notificationId: string;
+    channel: string;
+    delivery: string;
+    subNotificationId?: string;
+  }[];
+  notifications: {
+    notificationId: string;
+    title: string;
+  }[];
+  subNotifications: {
+    notificationId: string;
+    subNotificationId: string;
+    title: string;
+  }[];
+}
+
+function toPreferenceSettings(
+  rows: RestPreferencesResponse['preferences']
+): Preference['settings'] {
+  return rows
+    .filter((row) => row.channel !== 'WEB_PUSH')
+    .map((row) => ({
+      channel: row.channel,
+      channelName: channelNames[row.channel] ?? row.channel,
+      state: row.delivery !== 'off'
+    }));
+}
+
+function toPreferences(body: RestPreferencesResponse): Preference[] {
+  return (body.notifications ?? []).map((notification) => {
+    const subs = (body.subNotifications ?? []).filter(
+      (sub) => sub.notificationId === notification.notificationId
+    );
+    const preference: Preference = {
+      notificationId: notification.notificationId,
+      title: notification.title,
+      settings: toPreferenceSettings(
+        (body.preferences ?? []).filter(
+          (row) =>
+            row.notificationId === notification.notificationId &&
+            !row.subNotificationId
+        )
+      )
+    };
+    if (subs.length > 0) {
+      preference.subNotificationPreferences = subs.map((sub) => ({
+        notificationId: sub.notificationId,
+        subNotificationId: sub.subNotificationId,
+        title: sub.title,
+        settings: toPreferenceSettings(
+          (body.preferences ?? []).filter(
+            (row) =>
+              row.notificationId === sub.notificationId &&
+              row.subNotificationId === sub.subNotificationId
+          )
+        )
+      }));
+    }
+    return preference;
+  });
+}
 function position(
   popup: HTMLDivElement,
   popupInner: HTMLDivElement,
@@ -150,6 +217,84 @@ class NotificationAPIClient implements NotificationAPIClientInterface {
     });
   };
 
+  private authorizationHeader(): string {
+    const { clientId, userId, userIdHash } = this.state.initOptions;
+    return 'Basic ' + btoa(`${clientId}:${userId}:${userIdHash ?? ''}`);
+  }
+
+  private async rest<T>(
+    method: 'GET' | 'POST' | 'PATCH',
+    path: string,
+    body?: unknown
+  ): Promise<T> {
+    const headers: Record<string, string> = {
+      Authorization: this.authorizationHeader()
+    };
+    if (body !== undefined) {
+      headers['content-type'] = 'application/json';
+    }
+    const response = await fetch(`${this.state.restBaseURL}${path}`, {
+      method,
+      headers,
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {})
+    });
+    const text = await response.text();
+    const parsed = text ? JSON.parse(text) : undefined;
+    if (!response.ok) {
+      const message =
+        parsed && typeof parsed.error === 'string'
+          ? parsed.error
+          : `Request failed (${response.status})`;
+      throw new Error(message);
+    }
+    return parsed as T;
+  }
+
+  private async loadInApp(before?: string): Promise<void> {
+    const count = NOTIFICATION_REQUEST_COUNT;
+    const query = before
+      ? `?count=${count}&before=${encodeURIComponent(before)}`
+      : `?count=${count}`;
+    try {
+      const unreadPromise = before
+        ? undefined
+        : this.rest<{ count: number }>('GET', '/enduser/inapp/unread');
+      const pagePromise = this.rest<{ notifications: InappNotification[] }>(
+        'GET',
+        `/enduser/inapp${query}`
+      );
+      const [unread, page] = await Promise.all([unreadPromise, pagePromise]);
+      if (unread) {
+        this.websocketHandlers.unreadCount({
+          route: 'inapp_web/unread_count',
+          payload: { count: unread.count }
+        });
+      }
+      this.websocketHandlers.notifications({
+        route: 'inapp_web/notifications',
+        payload: { notifications: page.notifications ?? [] }
+      });
+    } catch (error) {
+      console.error(error);
+    }
+  }
+
+  private clearUnread(notificationId?: string): void {
+    void this.rest(
+      'PATCH',
+      '/enduser/inapp/unread',
+      notificationId ? { notificationId } : {}
+    ).catch((error) => console.error(error));
+  }
+
+  private async loadUserPreferences(): Promise<Preference[]> {
+    const body = await this.rest<RestPreferencesResponse>(
+      'GET',
+      '/enduser/preferences'
+    );
+    return toPreferences(body);
+  }
+
   constructor(options: InitOptions) {
     this.elements = {};
     this.state = {
@@ -160,10 +305,6 @@ class NotificationAPIClient implements NotificationAPIClientInterface {
       oldestNotificationsDate: '',
       currentPage: 0,
       pageSize: 999999,
-      webPushSettings: {
-        applicationServerKey: '',
-        askForWebPushPermission: false
-      },
       restBaseURL: options.restBaseURL ?? defaultRestAPIUrl
     };
     const translationsObject: TranslationObject =
@@ -255,34 +396,6 @@ class NotificationAPIClient implements NotificationAPIClientInterface {
           : ''
       }`;
       this.websocket = new WebSocket(websocketAddress);
-      // update environment data
-      this.websocket.addEventListener('message', (m: MessageEvent) => {
-        const body = JSON.parse(m.data);
-        if (!body || !body.route) {
-          return;
-        }
-        if (body.route === 'environment/data') {
-          const message = body as WS_EnvironmentDataResponse;
-          this.state.webPushSettings.applicationServerKey =
-            message.payload.applicationServerKey;
-          if (
-            'Notification' in window &&
-            Notification.permission === 'granted'
-          ) {
-            this.state.webPushSettings.askForWebPushPermission = false;
-          } else {
-            this.state.webPushSettings.askForWebPushPermission =
-              message.payload.askForWebPushPermission;
-            this.state.webPushSettings.askForWebPushPermission
-              ? this.renderWebPushOptIn()
-              : null;
-          }
-        }
-      });
-
-      this.sendWSMessage({
-        route: 'environment/data'
-      });
     }
   }
 
@@ -294,9 +407,9 @@ class NotificationAPIClient implements NotificationAPIClientInterface {
       );
       return;
     }
-    const url = `${this.state.restBaseURL}/${encodeURIComponent(
-      clientId
-    )}/users/${encodeURIComponent(userId)}`;
+    const url = `${this.state.restBaseURL}/enduser/${encodeURIComponent(
+      userId
+    )}`;
 
     const authToken =
       'Basic ' + btoa(`${clientId}:${userId}:${userIdHash ?? ''}`);
@@ -309,41 +422,6 @@ class NotificationAPIClient implements NotificationAPIClientInterface {
       },
       method: 'POST'
     });
-  };
-
-  askForWebPushPermission = (): void => {
-    if ('serviceWorker' in navigator) {
-      navigator.serviceWorker
-        .register(
-          this.state.initOptions.customServiceWorkerPath ??
-            '/notificationapi-service-worker.js'
-        )
-        .then(async (registration) => {
-          Notification.requestPermission().then(async (permission) => {
-            if (permission === 'granted') {
-              await registration.pushManager
-                .subscribe({
-                  userVisibleOnly: true,
-                  applicationServerKey:
-                    this.state.webPushSettings.applicationServerKey
-                })
-                .then(async (res) => {
-                  const body = {
-                    webPushTokens: [
-                      {
-                        sub: {
-                          endpoint: res.toJSON().endpoint as string,
-                          keys: res.toJSON().keys as PushSubscription['keys']
-                        }
-                      }
-                    ]
-                  };
-                  await this.identify(body);
-                });
-            }
-          });
-        });
-    }
   };
 
   showInApp = (options: InAppOptions): void => {
@@ -550,16 +628,7 @@ class NotificationAPIClient implements NotificationAPIClientInterface {
       };
     }
 
-    // use WS for inapp
-    this.sendWSMessage({
-      route: 'inapp_web/unread_count'
-    });
-    this.sendWSMessage({
-      route: 'inapp_web/notifications',
-      payload: {
-        count: NOTIFICATION_REQUEST_COUNT
-      }
-    });
+    void this.loadInApp();
 
     if (this.websocket) {
       const ws = this.websocket;
@@ -568,16 +637,6 @@ class NotificationAPIClient implements NotificationAPIClientInterface {
 
         if (!body || !body.route) {
           return;
-        }
-
-        if (body.route === 'inapp_web/unread_count') {
-          const message = body as WS_UnreadCountResponse;
-          this.websocketHandlers.unreadCount(message);
-        }
-
-        if (body.route === 'inapp_web/notifications') {
-          const message = body as WS_NotificationsResponse;
-          this.websocketHandlers.notifications(message);
         }
 
         if (body.route === 'inapp_web/new_notifications') {
@@ -590,20 +649,12 @@ class NotificationAPIClient implements NotificationAPIClientInterface {
 
   requestMoreNotifications(): void {
     if (
-      this.websocket &&
       new Date().getTime() - this.state.lastNotificationsRequestAt >= 500 &&
       (this.state.lastResponseNotificationsCount === undefined ||
         this.state.lastResponseNotificationsCount >= NOTIFICATION_REQUEST_COUNT)
     ) {
       this.state.lastNotificationsRequestAt = new Date().getTime();
-      const moreNotificationsRequest: WS_NotificationsRequest = {
-        route: 'inapp_web/notifications',
-        payload: {
-          before: this.state.oldestNotificationsDate,
-          count: NOTIFICATION_REQUEST_COUNT
-        }
-      };
-      this.sendWSMessage(moreNotificationsRequest);
+      void this.loadInApp(this.state.oldestNotificationsDate);
     }
   }
 
@@ -653,21 +704,6 @@ class NotificationAPIClient implements NotificationAPIClientInterface {
       const title = document.createElement('h1');
       title.innerHTML = i18n.t('notification_preferences');
       popup.appendChild(title);
-      // create and insert the button at the top only if askForWebPushPermission is true
-      if (this.state.webPushSettings.askForWebPushPermission) {
-        const message = document.createElement('p');
-        message.innerHTML = `<a href="#" class="click-here">${i18n.t(
-          'click_here'
-        )}</a> ${i18n.t('necessary_permissions_push_notifications')}`;
-        message.classList.add('notificationapi-preferences-web-push-opt-in');
-        popup.appendChild(message);
-
-        // Add click event listener to the message
-        message.addEventListener('click', (event) => {
-          event.preventDefault(); // prevent default action
-          this.askForWebPushPermission();
-        });
-      }
       // render loading state
       const loading = document.createElement('div');
       loading.classList.add('notificationapi-loading');
@@ -676,39 +712,22 @@ class NotificationAPIClient implements NotificationAPIClientInterface {
       loading.appendChild(icon);
       popup.appendChild(loading);
       this.elements.preferencesLoading = loading;
-
-      if (this.websocket) {
-        const ws = this.websocket;
-        ws.addEventListener('message', (m) => {
-          const body = JSON.parse(m.data);
-
-          if (!body || !body.route) {
-            return;
-          }
-          if (body.route === 'user_preferences/preferences') {
-            const message = body as WS_UserPreferencesResponse;
-            this.websocketHandlers.userPreferences(message);
-          }
-        });
-      }
     } else {
       this.elements.preferencesContainer.classList.remove('closed');
     }
 
-    // Request user preferences every time render is run to get the latest
-    this.sendWSMessage({
-      route: 'user_preferences/get_preferences'
-    });
+    void this.loadUserPreferences()
+      .then((preferences) => {
+        this.websocketHandlers.userPreferences({
+          route: 'user_preferences/preferences',
+          payload: { userPreferences: preferences }
+        });
+      })
+      .catch((error) => console.error(error));
   }
 
   async getUserPreferences(): Promise<Preference[]> {
-    this.sendWSMessage({
-      route: 'user_preferences/get_preferences'
-    });
-    const message = (await this.websocketMessageReceived(
-      'user_preferences/preferences'
-    )) as WS_UserPreferencesResponse;
-    return message.payload.userPreferences;
+    return this.loadUserPreferences();
   }
 
   patchUserPreference(
@@ -717,24 +736,15 @@ class NotificationAPIClient implements NotificationAPIClientInterface {
     state: boolean,
     subNotificationId?: string
   ): void {
-    const message: WS_UserPreferencesPatchRequest = {
-      route: 'user_preferences/patch_preferences',
-      payload: [
-        {
-          notificationId,
-          channelPreferences: [
-            {
-              channel,
-              state: state
-            }
-          ]
-        }
-      ]
+    const item = {
+      notificationId,
+      subNotificationId: subNotificationId ?? '',
+      channel,
+      state
     };
-    if (subNotificationId) {
-      message.payload[0].subNotificationId = subNotificationId;
-    }
-    this.sendWSMessage(message);
+    void this.rest('POST', '/enduser/preferences', [item]).catch((error) =>
+      console.error(error)
+    );
   }
 
   openInAppPopup(): void {
@@ -767,9 +777,7 @@ class NotificationAPIClient implements NotificationAPIClientInterface {
     this.state.notifications.map((n) => {
       n.seen = true;
     });
-    this.sendWSMessage({
-      route: 'inapp_web/unread_clear'
-    });
+    this.clearUnread();
 
     // In AUTOMATIC mode, don't remove the unseen class so users can differentiate what's new and what's old
     if (
@@ -1007,12 +1015,7 @@ class NotificationAPIClient implements NotificationAPIClientInterface {
           e.preventDefault();
           notification.classList.remove('unseen');
           this.setInAppUnread(this.state.unread - 1);
-          this.sendWSMessage({
-            route: 'inapp_web/unread_clear',
-            payload: {
-              notificationId: n.id
-            }
-          });
+          this.clearUnread(n.id);
         });
         menu.appendChild(item);
         notification.appendChild(menu);
@@ -1040,12 +1043,7 @@ class NotificationAPIClient implements NotificationAPIClientInterface {
           notification.classList.remove('unseen');
           n.seen = true;
           this.setInAppUnread(this.state.unread - 1);
-          this.sendWSMessage({
-            route: 'inapp_web/unread_clear',
-            payload: {
-              notificationId: n.id
-            }
-          });
+          this.clearUnread(n.id);
         }
       });
     }
@@ -1057,7 +1055,17 @@ class NotificationAPIClient implements NotificationAPIClientInterface {
     if (!this.elements.preferencesPopup) return;
 
     const popup = this.elements.preferencesPopup;
-    const validPreferences = preferences.filter((p) => p.settings.length > 0);
+    const withoutWebPush = preferences.map((p) => ({
+      ...p,
+      settings: p.settings.filter((s) => s.channel !== 'WEB_PUSH'),
+      subNotificationPreferences: p.subNotificationPreferences?.map((sub) => ({
+        ...sub,
+        settings: sub.settings.filter((s) => s.channel !== 'WEB_PUSH')
+      }))
+    }));
+    const validPreferences = withoutWebPush.filter(
+      (p) => p.settings.length > 0
+    );
     if (validPreferences.length === 0 && !this.elements.preferencesEmpty) {
       const empty = document.createElement('div');
       empty.classList.add('notificationapi-preferences-empty');
@@ -1234,97 +1242,6 @@ class NotificationAPIClient implements NotificationAPIClientInterface {
           row++;
         });
       }
-    });
-  }
-
-  renderWebPushOptIn(): void {
-    const localStorageAskForWebPushPermission: boolean = JSON.parse(
-      localStorage.getItem('askForWebPushPermission') || 'true'
-    );
-    if (!this.elements.header || !localStorageAskForWebPushPermission) {
-      return;
-    }
-
-    // add opt-in message
-    const optInContainer = document.createElement('div');
-    optInContainer.classList.add('notificationapi-opt-in-container');
-
-    const optInMessage = document.createElement('div');
-    optInMessage.innerHTML = i18n.t(
-      'do_you_want_to_receive_push_notifications'
-    );
-    optInMessage.classList.add('notificationapi-opt-in-message');
-    optInContainer.appendChild(optInMessage);
-
-    const allowButton = document.createElement('button');
-    allowButton.innerHTML = i18n.t('yes');
-    allowButton.classList.add('notificationapi-allow-button');
-    allowButton.addEventListener('click', () => {
-      this.askForWebPushPermission();
-      // Set askForWebPushPermission to false in local storage on Yes click
-      localStorage.setItem('askForWebPushPermission', 'false');
-      optInContainer.style.display = 'none';
-    });
-    optInContainer.appendChild(allowButton);
-
-    const noThanksButton = document.createElement('button');
-    noThanksButton.innerHTML = i18n.t('no_thanks');
-    noThanksButton.classList.add('notificationapi-no-thanks-button');
-    noThanksButton.addEventListener('click', () => {
-      // Set askForWebPushPermission to false in local storage on No Thanks click
-      localStorage.setItem('askForWebPushPermission', 'false');
-      optInContainer.style.display = 'none';
-    });
-    optInContainer.appendChild(noThanksButton);
-    this.elements.header.appendChild(optInContainer);
-  }
-
-  sendWSMessage(request: WS_ANY_VALID_REQUEST): void {
-    if (!this.websocket) return;
-    const ws = this.websocket;
-    if (ws.readyState == ws.OPEN) {
-      ws.send(JSON.stringify(request));
-    } else {
-      ws.addEventListener('open', () => {
-        ws.send(JSON.stringify(request));
-      });
-    }
-  }
-
-  async websocketMessageReceived(route: string): Promise<unknown> {
-    const ws = await this.websocketOpened();
-    return new Promise((resolve) => {
-      ws.addEventListener('message', (message) => {
-        const body = JSON.parse(message.data);
-        if (body && body.route && body.route === route) {
-          resolve(body);
-        }
-      });
-    });
-  }
-
-  websocketOpened(): Promise<WebSocket> {
-    return new Promise((resolve, reject) => {
-      const ws = this.websocket;
-      if (!ws) {
-        reject('Websocket is not present.');
-        return;
-      }
-
-      const checkState = () => {
-        if (ws.readyState === ws.OPEN) {
-          resolve(ws);
-        } else if (
-          ws.readyState === ws.CLOSED ||
-          ws.readyState === ws.CLOSING
-        ) {
-          reject('Websocket failed to open.');
-        } else {
-          setTimeout(checkState, 100); // Check again in 100ms
-        }
-      };
-
-      checkState();
     });
   }
 }
