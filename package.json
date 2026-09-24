@@ -34,7 +34,7 @@
   },
   "devDependencies": {
     "@babel/core": "^7.12.10",
-    "@faker-js/faker": "^7.6.0",
+    "@faker-js/faker": "^10.5.0",
     "@storybook/html": "^10.6.0",
     "@storybook/html-vite": "^10.6.0",
     "@types/javascript-time-ago": "^2.0.2",
