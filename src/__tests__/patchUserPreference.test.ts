@@ -36,6 +36,7 @@ test('posts a preference update', () => {
   expect(JSON.parse(call[1].body)).toEqual([
     {
       notificationId: 'notificationId',
+      subNotificationId: '',
       channel: 'channel',
       state: false
     }

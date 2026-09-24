@@ -736,19 +736,12 @@ class NotificationAPIClient implements NotificationAPIClientInterface {
     state: boolean,
     subNotificationId?: string
   ): void {
-    const item: {
-      notificationId: string;
-      subNotificationId?: string;
-      channel: string;
-      state: boolean;
-    } = {
+    const item = {
       notificationId,
+      subNotificationId: subNotificationId ?? '',
       channel,
       state
     };
-    if (subNotificationId) {
-      item.subNotificationId = subNotificationId;
-    }
     void this.rest('POST', '/enduser/preferences', [item]).catch((error) =>
       console.error(error)
     );

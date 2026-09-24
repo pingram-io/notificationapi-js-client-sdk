@@ -241,6 +241,7 @@ describe('preferences requests', () => {
     expect(JSON.parse(posts[0][1].body)).toEqual([
       {
         notificationId: emailInAppPreference.notificationId,
+        subNotificationId: '',
         channel: 'EMAIL',
         state: false
       }
@@ -259,6 +260,7 @@ describe('preferences requests', () => {
     expect(JSON.parse(postsAfter[1][1].body)).toEqual([
       {
         notificationId: emailInAppPreference.notificationId,
+        subNotificationId: '',
         channel: 'EMAIL',
         state: true
       }
