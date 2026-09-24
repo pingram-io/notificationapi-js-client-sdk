@@ -7,26 +7,30 @@ jobs:
   Release:
     name: Test & Build & Punlish
     runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+      actions: read
     outputs:
       releaseType: ${{ steps.publish.outputs.type }}
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v7
 
       - name: Setup Node
-        uses: actions/setup-node@v3
+        uses: actions/setup-node@v7
         with:
-          node-version: 18.17
+          node-version: 20
 
       - name: Cache node_modules
         id: cache-modules
-        uses: actions/cache@v1
+        uses: actions/cache@v6
         with:
           path: node_modules
-          key: 18.17.x-${{ runner.OS }}-build-${{ hashFiles('package.json') }}
+          key: 20.x-${{ runner.OS }}-build-${{ hashFiles('package-lock.json') }}
 
       - name: NPM Install
         if: steps.cache-modules.outputs.cache-hit != 'true'
-        run: npm install
+        run: npm ci
 
       - name: Lint
         run: npm run-script lint
@@ -40,29 +44,53 @@ jobs:
       - name: Build
         run: npm run build
 
-      - name: Send Slack notification
+      - name: Send Slack Success Notification (Pre-Publish)
+        if: success()
         uses: 8398a7/action-slack@v3
         with:
           status: ${{ job.status }}
           fields: repo,message,action,took
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-        if: always() # Pick up events even if the job fails or is canceled.
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_SUCCESS_WEBHOOK_URL }}
 
-      - name: Publish
-        id: publish
-        uses: JS-DevTools/npm-publish@v1
-        with:
-          token: ${{ secrets.JS_CLIENT_SDK_NPM_AUTH_TOKEN }}
-
-      - name: Send Slack notification
+      - name: Send Slack Failure Notification (Pre-Publish)
+        if: failure() || cancelled()
         uses: 8398a7/action-slack@v3
         with:
           status: ${{ job.status }}
-          fields: repo
+          fields: repo,message,action,took
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_FAILED_WEBHOOK_URL }}
+
+      - name: Update npm
+        run: npm install -g npm@11.18.0
+
+      - name: Publish
+        id: publish
+        uses: JS-DevTools/npm-publish@v4
+        with:
+          provenance: true
+
+      - name: Send Slack Notification on Success
+        if: success()
+        uses: 8398a7/action-slack@v3
+        with:
+          status: ${{ job.status }}
+          fields: repo,message,commit,workflow,took
           text: Published to NPM ${{ steps.publish.outputs.old-version }} -> ${{ steps.publish.outputs.version }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-        if: steps.publish.outputs.type != 'none' && always()
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_SUCCESS_WEBHOOK_URL }}
+
+      - name: Send Slack Notification on Failure
+        if: failure() || cancelled()
+        uses: 8398a7/action-slack@v3
+        with:
+          status: ${{ job.status }}
+          fields: repo,message,commit,workflow,took
+          text: Published to NPM ${{ steps.publish.outputs.old-version }} -> ${{ steps.publish.outputs.version }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_FAILED_WEBHOOK_URL }}

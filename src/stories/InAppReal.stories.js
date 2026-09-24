@@ -1,11 +1,12 @@
-import { INITIAL_VIEWPORTS } from '@storybook/addon-viewport';
+import NotificationAPI from '../index';
+import { INITIAL_VIEWPORTS } from 'storybook/viewport';
 import '../assets/styles.css';
 
 export default {
   title: 'InApp/Real',
   parameters: {
     viewport: {
-      viewports: INITIAL_VIEWPORTS
+      options: INITIAL_VIEWPORTS
     }
   },
   argTypes: {
@@ -17,7 +18,7 @@ export default {
 };
 
 const Component = ({ ...args }) => {
-  window.NotificationAPI = require('../index').default;
+  Object.assign(window, { NotificationAPI });
   return `<div id="our-root"></div>
           <BR><BR>
           <script>

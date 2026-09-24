@@ -1,9 +1,11 @@
+import NotificationAPI from '../index';
+
 export default {
   title: 'User Preferences'
 };
 
 const Component = ({ ...args }) => {
-  window.NotificationAPI = require('../index').default;
+  Object.assign(window, { NotificationAPI });
   let page = `Just some random text on the page to see the blur effect.
           <BR><BR>
           <script>
