@@ -26,6 +26,19 @@ afterEach(() => {
 });
 
 describe('when identify is called', () => {
+  it('includes the user hash in the auth header', async () => {
+    notificationapi.destroy();
+    notificationapi = new NotificationAPIClient({
+      clientId,
+      userId,
+      userIdHash: 'hash'
+    });
+    await notificationapi.identify({ email: 'something' });
+    expect(fetchMock.mock.calls[0][1]['headers']['Authorization']).toEqual(
+      'Basic ' + btoa(`${clientId}:${userId}:hash`)
+    );
+  });
+
   it('returns error when userIds do not match', async () => {
     notificationapi.identify({
       id: 'somethingelse'

@@ -32,6 +32,24 @@ afterEach(() => {
   if (notificationapi) notificationapi.destroy();
 });
 
+test('sends the user hash and uses a custom REST host', async () => {
+  const hashed = new NotificationAPI({
+    clientId,
+    userId,
+    userIdHash: 'hash',
+    restBaseURL: 'https://api.pingram.io',
+    websocket: false
+  });
+  await hashed.getUserPreferences();
+  expect((global.fetch as jest.Mock).mock.calls[0][0]).toEqual(
+    'https://api.pingram.io/enduser/preferences'
+  );
+  expect(
+    (global.fetch as jest.Mock).mock.calls[0][1].headers.Authorization
+  ).toEqual('Basic ' + btoa(`${clientId}:${userId}:hash`));
+  hashed.destroy();
+});
+
 test('requests GET /enduser/preferences', async () => {
   await notificationapi.getUserPreferences();
   expect((global.fetch as jest.Mock).mock.calls[0][0]).toEqual(
