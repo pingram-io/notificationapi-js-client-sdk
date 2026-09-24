@@ -48,9 +48,7 @@ describe('when identify is called', () => {
 
     it('to the right url', async () => {
       expect(fetchMock.mock.calls[0][0]).toEqual(
-        `https://api.notificationapi.com/${encodeURIComponent(
-          clientId
-        )}/users/${encodeURIComponent(userId)}`
+        `https://api.notificationapi.com/enduser/${encodeURIComponent(userId)}`
       );
     });
 

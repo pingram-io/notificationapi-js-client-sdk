@@ -4,12 +4,7 @@ import {
   NotificationAPIClientInterface,
   PopupPosition,
   MarkAsReadModes,
-  WS_ClearUnreadRequest,
-  WS_NewNotificationsResponse,
-  WS_NotificationsRequest,
-  WS_NotificationsResponse,
-  WS_UnreadCountRequest,
-  WS_UnreadCountResponse
+  WS_NewNotificationsResponse
 } from '../interfaces';
 import WS from 'jest-websocket-mock';
 import NotificationAPI from '../index';
@@ -100,6 +95,13 @@ const userId = 'userId@';
 let spy: jest.SpyInstance;
 let notificationapi: NotificationAPIClientInterface;
 let server: WS;
+
+const restResponse = (body: unknown) => ({
+  ok: true,
+  status: 200,
+  text: async () => JSON.stringify(body)
+});
+
 beforeEach(() => {
   spy = jest.spyOn(console, 'error').mockImplementation();
   document.body.innerHTML =
@@ -110,6 +112,11 @@ beforeEach(() => {
     value: 1600
   });
   server = new WS('ws://localhost:1234', { jsonProtocol: true });
+  global.fetch = jest
+    .fn()
+    .mockImplementation(async () =>
+      restResponse({ count: 0, notifications: [] })
+    );
   notificationapi = new NotificationAPI({
     clientId,
     userId,
@@ -226,14 +233,14 @@ describe('popup interactions', () => {
     notificationapi.showInApp({
       root: 'root'
     });
-    await server.nextMessage;
-    await server.nextMessage;
     $('.notificationapi-button').trigger('click');
-    const expectedMsg: WS_ClearUnreadRequest = {
-      route: 'inapp_web/unread_clear'
-    };
     expect($('.notificationapi-unread').hasClass('hidden')).toBeTruthy();
-    await expect(server).toReceiveMessage(expectedMsg);
+    const clear = (global.fetch as jest.Mock).mock.calls.find(
+      (call) =>
+        String(call[0]).endsWith('/enduser/inapp/unread') &&
+        call[1].method === 'PATCH'
+    );
+    expect(clear[1].body).toEqual(JSON.stringify({}));
   });
 
   test('when button is clicked then clicked again, popup has .closed', async () => {
@@ -323,53 +330,44 @@ describe('popup interactions', () => {
   });
 
   test('after receiving >=50 notifications, scrolling to the end triggers requesting 50 more before the oldest notification', async () => {
-    notificationapi.showInApp({
-      root: 'root'
-    });
-    await server.nextMessage; // unread request
-    await server.nextMessage; // notifications request
     fiftyNotifs[49] = {
       ...testNotification,
       id: '49',
       date: '1989-09-28T10:00:00.000Z'
     };
-    const res: WS_NotificationsResponse = {
+    notificationapi.showInApp({
+      root: 'root'
+    });
+    notificationapi.websocketHandlers.notifications({
       route: 'inapp_web/notifications',
       payload: {
         notifications: fiftyNotifs
       }
-    };
-    server.send(res);
+    });
     $('.notificationapi-button').trigger('click');
-    await server.nextMessage; // clear request
     $('.notificationapi-popup-inner')[0].dispatchEvent(
       new CustomEvent('scroll')
     );
-    const req4: WS_NotificationsRequest = {
-      route: 'inapp_web/notifications',
-      payload: {
-        before: '1989-09-28T10:00:00.000Z',
-        count: 50
-      }
-    };
-    await expect(server).toReceiveMessage(req4);
+    const more = (global.fetch as jest.Mock).mock.calls.find((call) =>
+      String(call[0]).includes('before=1989-09-28T10%3A00%3A00.000Z')
+    );
+    expect(more[0]).toEqual(
+      'https://api.notificationapi.com/enduser/inapp?count=50&before=1989-09-28T10%3A00%3A00.000Z'
+    );
   });
 
   test('after receiving >=50 notifications, after scrolling and requesting more, scrolling quickly again does not trigger requesting more', async () => {
     notificationapi.showInApp({
       root: 'root'
     });
-    await server.nextMessage; // unread request
-    await server.nextMessage; // notifications request
-    const res: WS_NotificationsResponse = {
+    notificationapi.websocketHandlers.notifications({
       route: 'inapp_web/notifications',
       payload: {
         notifications: fiftyNotifs
       }
-    };
-    server.send(res);
+    });
     $('.notificationapi-button').trigger('click');
-    await server.nextMessage; // clear request
+    const callsBeforeScroll = (global.fetch as jest.Mock).mock.calls.length;
     $('.notificationapi-popup-inner')[0].dispatchEvent(
       new CustomEvent('scroll')
     );
@@ -381,30 +379,31 @@ describe('popup interactions', () => {
     );
 
     await new Promise((resolve) => setTimeout(resolve, 1000)); // wait 1s
-    expect(server.messages).toHaveLength(4);
+    expect((global.fetch as jest.Mock).mock.calls.length).toEqual(
+      callsBeforeScroll + 1
+    );
   });
 
   test('after receiving <50 notifications, scrolling does not trigger requetsing more', async () => {
     notificationapi.showInApp({
       root: 'root'
     });
-    await server.nextMessage; // unread request
-    await server.nextMessage; // notifications request
-    const res: WS_NotificationsResponse = {
+    notificationapi.websocketHandlers.notifications({
       route: 'inapp_web/notifications',
       payload: {
         notifications: [testNotification]
       }
-    };
-    server.send(res);
+    });
     $('.notificationapi-button').trigger('click');
-    await server.nextMessage; // clear request
+    const callsBeforeScroll = (global.fetch as jest.Mock).mock.calls.length;
     $('.notificationapi-popup-inner')[0].dispatchEvent(
       new CustomEvent('scroll')
     );
-    await new Promise((resolve) => setTimeout(resolve, 1000)); // wait 1s
-    expect(server.messages).toHaveLength(3);
     expect($('.notificationapi-nomore')).toHaveLength(1);
+    await new Promise((resolve) => setTimeout(resolve, 1000)); // wait 1s
+    expect((global.fetch as jest.Mock).mock.calls.length).toEqual(
+      callsBeforeScroll
+    );
   });
 });
 
@@ -684,39 +683,17 @@ describe('Handling WS_NotificationsResponse', () => {
 });
 
 describe('websocket send & receives', () => {
-  test('given WS is not open, requests for unread count and notifications after it is opened', async () => {
+  test('requests unread count and notifications over REST', async () => {
     notificationapi.showInApp({
       root: 'root'
     });
-    const req1: WS_UnreadCountRequest = {
-      route: 'inapp_web/unread_count'
-    };
-    const req2: WS_NotificationsRequest = {
-      route: 'inapp_web/notifications',
-      payload: {
-        count: 50
-      }
-    };
-    await expect(server).toReceiveMessage(req1);
-    await expect(server).toReceiveMessage(req2);
-  });
-
-  test('given WS is open, requests for unread count and notifications', async () => {
-    await server.connected; // ensuring WS is open
-    notificationapi.showInApp({
-      root: 'root'
-    });
-    const req1: WS_UnreadCountRequest = {
-      route: 'inapp_web/unread_count'
-    };
-    const req2: WS_NotificationsRequest = {
-      route: 'inapp_web/notifications',
-      payload: {
-        count: 50
-      }
-    };
-    await expect(server).toReceiveMessage(req1);
-    await expect(server).toReceiveMessage(req2);
+    const urls = (global.fetch as jest.Mock).mock.calls.map((call) =>
+      String(call[0])
+    );
+    expect(urls).toEqual([
+      'https://api.notificationapi.com/enduser/inapp/unread',
+      'https://api.notificationapi.com/enduser/inapp?count=50'
+    ]);
   });
 
   test('given malformed message, doesnt break', async () => {
@@ -727,34 +704,41 @@ describe('websocket send & receives', () => {
     expect(spy.mock.calls).toHaveLength(0);
   });
 
-  test('given WS_UnreadCountResponse, calls websocketHandlers.unreadCount', async () => {
-    const spy = jest.spyOn(notificationapi.websocketHandlers, 'unreadCount');
+  test('given an unread count response, calls websocketHandlers.unreadCount', async () => {
+    const handler = jest.spyOn(
+      notificationapi.websocketHandlers,
+      'unreadCount'
+    );
+    (global.fetch as jest.Mock).mockImplementation(async (url: string) => {
+      if (String(url).includes('/unread')) return restResponse({ count: 3 });
+      return restResponse({ notifications: [] });
+    });
     notificationapi.showInApp({
       root: 'root'
     });
-    const res: WS_UnreadCountResponse = {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(handler).toHaveBeenCalledWith({
       route: 'inapp_web/unread_count',
-      payload: {
-        count: 3
-      }
-    };
-    server.send(res);
-    expect(spy).toHaveBeenCalledWith(res);
+      payload: { count: 3 }
+    });
   });
 
-  test('given WS_NotificationsResponse, calls websocketHandlers.notifications', async () => {
-    const spy = jest.spyOn(notificationapi.websocketHandlers, 'notifications');
+  test('given a notifications response, calls websocketHandlers.notifications', async () => {
+    const handler = jest.spyOn(
+      notificationapi.websocketHandlers,
+      'notifications'
+    );
+    (global.fetch as jest.Mock).mockImplementation(async () =>
+      restResponse({ notifications: [] })
+    );
     notificationapi.showInApp({
       root: 'root'
     });
-    const res: WS_NotificationsResponse = {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(handler).toHaveBeenCalledWith({
       route: 'inapp_web/notifications',
-      payload: {
-        notifications: []
-      }
-    };
-    server.send(res);
-    expect(spy).toHaveBeenCalledWith(res);
+      payload: { notifications: [] }
+    });
   });
 
   test('given WS_NewNotificationsResponse, calls websocketHandlers.newNotifications', async () => {
@@ -780,11 +764,10 @@ describe('websocket send & receives', () => {
     notificationapi.showInApp({
       root: 'root'
     });
-    const message: WS_NotificationsResponse = {
+    notificationapi.websocketHandlers.notifications({
       route: 'inapp_web/notifications',
       payload: { notifications: [testNotification, testNotificationUnseen] }
-    };
-    server.send(message);
+    });
     expect($('.notificationapi-notification')).toHaveLength(2);
     expect($('.notificationapi-nomore')).toHaveLength(1);
   });
@@ -793,11 +776,10 @@ describe('websocket send & receives', () => {
     notificationapi.showInApp({
       root: 'root'
     });
-    const message: WS_NotificationsResponse = {
+    notificationapi.websocketHandlers.notifications({
       route: 'inapp_web/notifications',
       payload: { notifications: [] }
-    };
-    server.send(message);
+    });
     expect($('.notificationapi-notification')).toHaveLength(0);
     expect($('.notificationapi-empty')).toHaveLength(1);
     expect($('.notificationapi-nomore')).toHaveLength(0);
@@ -978,23 +960,26 @@ describe('paginated', () => {
   });
 
   test('loads more notifications when it reaches one page before last', async () => {
+    const notifications = [
+      ...generateFakeNotifications(49),
+      {
+        ...testNotification,
+        date: '1989-09-28T10:00:00.000Z'
+      }
+    ];
+    (global.fetch as jest.Mock).mockImplementation(async (url: string) => {
+      if (String(url).includes('/unread')) return restResponse({ count: 0 });
+      return restResponse({ notifications });
+    });
     notificationapi.showInApp({
       root: 'root',
       paginated: true,
       pageSize: 10
     });
-    await server.nextMessage; // unread
-    await server.nextMessage; // notifications
     notificationapi.websocketHandlers.notifications({
       route: 'inapp_web/notifications',
       payload: {
-        notifications: [
-          ...generateFakeNotifications(49),
-          {
-            ...testNotification,
-            date: '1989-09-28T10:00:00.000Z'
-          }
-        ]
+        notifications
       }
     });
     expect(notificationapi.state.notifications).toHaveLength(50);
@@ -1004,14 +989,10 @@ describe('paginated', () => {
     notificationapi.elements.nextButton?.click(); // page 3
     notificationapi.elements.nextButton?.click(); // page 4
 
-    const req3: WS_NotificationsRequest = {
-      route: 'inapp_web/notifications',
-      payload: {
-        before: '1989-09-28T10:00:00.000Z',
-        count: 50
-      }
-    };
-    await expect(server).toReceiveMessage(req3);
+    const more = (global.fetch as jest.Mock).mock.calls.find((call) =>
+      String(call[0]).includes('before=1989-09-28T10%3A00%3A00.000Z')
+    );
+    expect(more[0]).toContain('/enduser/inapp?count=50&before=');
   });
 });
 
@@ -1040,8 +1021,6 @@ describe('setAsReadMode', () => {
           root: 'root',
           markAsReadMode: mode
         });
-        await server.nextMessage;
-        await server.nextMessage;
         notificationapi.websocketHandlers.unreadCount({
           route: 'inapp_web/unread_count',
           payload: {
@@ -1063,10 +1042,12 @@ describe('setAsReadMode', () => {
           notificationapi.state.notifications.filter((n) => !n.seen)
         ).toHaveLength(0);
         expect($('.unseen')).toHaveLength(0);
-        const expectedMsg: WS_ClearUnreadRequest = {
-          route: 'inapp_web/unread_clear'
-        };
-        await expect(server).toReceiveMessage(expectedMsg);
+        const clear = (global.fetch as jest.Mock).mock.calls.find(
+          (call) =>
+            String(call[0]).endsWith('/enduser/inapp/unread') &&
+            call[1].method === 'PATCH'
+        );
+        expect(clear[1].body).toEqual(JSON.stringify({}));
       });
 
       test('there is a menu button for all seen/unseen notifications', () => {
@@ -1143,8 +1124,6 @@ describe('setAsReadMode', () => {
           root: 'root',
           markAsReadMode: mode
         });
-        await server.nextMessage;
-        await server.nextMessage;
         notificationapi.websocketHandlers.unreadCount({
           route: 'inapp_web/unread_count',
           payload: {
@@ -1165,13 +1144,10 @@ describe('setAsReadMode', () => {
         expect(notificationapi.state.unread).toEqual(4);
         expect($('.notificationapi-notification-menu')).toHaveLength(0);
         expect($('#root .notificationapi-popup.closed')).toHaveLength(0);
-        const expectedMsg: WS_ClearUnreadRequest = {
-          route: 'inapp_web/unread_clear',
-          payload: {
-            notificationId: '4'
-          }
-        };
-        expect(server).toReceiveMessage(expectedMsg);
+        const clear = (global.fetch as jest.Mock).mock.calls.find(
+          (call) => call[1].method === 'PATCH'
+        );
+        expect(clear[1].body).toEqual(JSON.stringify({ notificationId: '4' }));
       });
     });
   });
@@ -1182,8 +1158,6 @@ describe('setAsReadMode', () => {
         root: 'root',
         markAsReadMode: MarkAsReadModes.MANUAL_AND_CLICK
       });
-      await server.nextMessage;
-      await server.nextMessage;
       notificationapi.websocketHandlers.unreadCount({
         route: 'inapp_web/unread_count',
         payload: {
@@ -1206,13 +1180,10 @@ describe('setAsReadMode', () => {
       expect($('.notificationapi-unread')[0].innerHTML).toEqual('4');
       expect(notificationapi.state.unread).toEqual(4);
       expect($('.notificationapi-notification-menu')).toHaveLength(0);
-      const expectedMsg: WS_ClearUnreadRequest = {
-        route: 'inapp_web/unread_clear',
-        payload: {
-          notificationId: '4'
-        }
-      };
-      expect(server).toReceiveMessage(expectedMsg);
+      const clear = (global.fetch as jest.Mock).mock.calls.find(
+        (call) => call[1].method === 'PATCH'
+      );
+      expect(clear[1].body).toEqual(JSON.stringify({ notificationId: '4' }));
 
       // clicking it again, does not reduce the unread count again:
       $('.notificationapi-notification-title').trigger('click');
@@ -1225,8 +1196,6 @@ describe('setAsReadMode', () => {
         root: 'root',
         markAsReadMode: MarkAsReadModes.MANUAL_AND_CLICK
       });
-      await server.nextMessage;
-      await server.nextMessage;
       notificationapi.websocketHandlers.unreadCount({
         route: 'inapp_web/unread_count',
         payload: {
@@ -1249,13 +1218,11 @@ describe('setAsReadMode', () => {
       expect($('.notificationapi-unread')[0].innerHTML).toEqual('5');
       expect(notificationapi.state.unread).toEqual(5);
       expect($('.notificationapi-notification-menu')).toHaveLength(0);
-      const expectedMsg: WS_ClearUnreadRequest = {
-        route: 'inapp_web/unread_clear',
-        payload: {
-          notificationId: '4'
-        }
-      };
-      expect(server).toReceiveMessage(expectedMsg);
+      expect(
+        (global.fetch as jest.Mock).mock.calls.find(
+          (call) => call[1].method === 'PATCH'
+        )
+      ).toBeUndefined();
     });
   });
 });

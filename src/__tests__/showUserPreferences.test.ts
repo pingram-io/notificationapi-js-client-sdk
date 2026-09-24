@@ -1,11 +1,5 @@
 import $ from 'jquery';
-import {
-  NotificationAPIClientInterface,
-  WS_UnreadCountResponse,
-  WS_UserPreferencesPatchRequest,
-  WS_UserPreferencesRequest,
-  WS_UserPreferencesResponse
-} from '../interfaces';
+import { NotificationAPIClientInterface } from '../interfaces';
 import WS from 'jest-websocket-mock';
 import NotificationAPI from '../index';
 
@@ -14,7 +8,6 @@ const userId = 'userId@';
 
 let spy: jest.SpyInstance;
 let notificationapi: NotificationAPIClientInterface;
-let server: WS;
 
 const emailInAppPreference = {
   notificationId: 'notificationId1',
@@ -58,7 +51,17 @@ beforeEach(() => {
     configurable: true,
     value: 1600
   });
-  server = new WS('ws://localhost:1234', { jsonProtocol: true });
+  new WS('ws://localhost:1234', { jsonProtocol: true });
+  global.fetch = jest.fn().mockResolvedValue({
+    ok: true,
+    status: 200,
+    text: async () =>
+      JSON.stringify({
+        preferences: [],
+        notifications: [],
+        subNotifications: []
+      })
+  });
   notificationapi = new NotificationAPI({
     clientId,
     userId,
@@ -153,7 +156,7 @@ describe('inline mode', () => {
   });
 });
 
-describe('websocket send & receives', () => {
+describe('preferences requests', () => {
   test('given no WS, throws no error', async () => {
     notificationapi = new NotificationAPI({
       clientId,
@@ -164,117 +167,106 @@ describe('websocket send & receives', () => {
     expect(spy.mock.calls).toEqual([]);
   });
 
-  test('given WS is not open, requests user_preferences after it is opened', async () => {
+  test('requests GET /enduser/preferences', async () => {
     notificationapi.showUserPreferences();
-    const req1: WS_UserPreferencesRequest = {
-      route: 'user_preferences/get_preferences'
-    };
-    await expect(server).toReceiveMessage(req1);
-  });
-
-  test('given WS is open, requests user_preferences', async () => {
-    await server.connected; // ensuring WS is open
-    notificationapi.showUserPreferences();
-    const req1: WS_UserPreferencesRequest = {
-      route: 'user_preferences/get_preferences'
-    };
-    await expect(server).toReceiveMessage(req1);
-  });
-
-  test('given malformed message, doesnt break', async () => {
-    notificationapi.showUserPreferences();
-    server.send('test');
-    expect(spy.mock.calls).toHaveLength(0);
+    expect((global.fetch as jest.Mock).mock.calls[0][0]).toEqual(
+      'https://api.notificationapi.com/enduser/preferences'
+    );
+    expect((global.fetch as jest.Mock).mock.calls[0][1].method).toEqual('GET');
   });
 
   test('given preferences, calls renderPreferences function with preference objects', async () => {
     const mock = jest.spyOn(notificationapi, 'renderPreferences');
+    (global.fetch as jest.Mock).mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () =>
+        JSON.stringify({
+          preferences: [
+            {
+              notificationId: 'test-notificationId',
+              channel: 'EMAIL',
+              delivery: 'instant'
+            }
+          ],
+          notifications: [
+            {
+              notificationId: 'test-notificationId',
+              title: 'test-title'
+            }
+          ],
+          subNotifications: []
+        })
+    });
     notificationapi.showUserPreferences();
-    const res: WS_UserPreferencesResponse = {
-      route: 'user_preferences/preferences',
-      payload: {
-        userPreferences: [
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(mock).toHaveBeenCalledWith([
+      {
+        notificationId: 'test-notificationId',
+        title: 'test-title',
+        settings: [
           {
-            notificationId: 'test-notificationId',
-            title: 'test-title',
-            settings: []
+            channel: 'EMAIL',
+            channelName: 'Email',
+            state: true
           }
         ]
       }
-    };
-    server.send(res);
-    expect(mock).toHaveBeenCalledWith(res.payload.userPreferences);
+    ]);
   });
 
-  test('given other messages, does not call renderPreferences', async () => {
+  test('a failed preferences request does not call renderPreferences', async () => {
     const mock = jest.spyOn(notificationapi, 'renderPreferences');
+    (global.fetch as jest.Mock).mockRejectedValue(new Error('offline'));
     notificationapi.showUserPreferences();
-    const res: WS_UnreadCountResponse = {
-      route: 'inapp_web/unread_count',
-      payload: {
-        count: 50
-      }
-    };
-    server.send(res);
+    await new Promise((resolve) => setTimeout(resolve, 0));
     expect(mock).toHaveBeenCalledTimes(0);
   });
 
   test('given preference, clicking toggle changes the toggle and sends correct patch request', async () => {
     notificationapi.showUserPreferences();
-    await server.nextMessage;
     notificationapi.renderPreferences([emailInAppPreference]);
     $(
       '.notificationapi-preferences-toggle[data-channel="EMAIL"] input'
     ).trigger('click');
 
-    const req1: WS_UserPreferencesPatchRequest = {
-      route: 'user_preferences/patch_preferences',
-      payload: [
-        {
-          notificationId: emailInAppPreference.notificationId,
-          channelPreferences: [
-            {
-              channel: 'EMAIL',
-              state: false
-            }
-          ]
-        }
-      ]
-    };
     expect(
       $(
         '.notificationapi-preferences-toggle[data-channel="EMAIL"] input:not(:checked)'
       )
     ).toHaveLength(1);
-    await expect(server).toReceiveMessage(req1);
+    const posts = (global.fetch as jest.Mock).mock.calls.filter(
+      (call) => call[1].method === 'POST'
+    );
+    expect(JSON.parse(posts[0][1].body)).toEqual([
+      {
+        notificationId: emailInAppPreference.notificationId,
+        channel: 'EMAIL',
+        state: false
+      }
+    ]);
     $(
       '.notificationapi-preferences-toggle[data-channel="EMAIL"] input'
     ).trigger('click');
-    const req2: WS_UserPreferencesPatchRequest = {
-      route: 'user_preferences/patch_preferences',
-      payload: [
-        {
-          notificationId: emailInAppPreference.notificationId,
-          channelPreferences: [
-            {
-              channel: 'EMAIL',
-              state: true
-            }
-          ]
-        }
-      ]
-    };
     expect(
       $(
         '.notificationapi-preferences-toggle[data-channel="EMAIL"] input:checked'
       )
     ).toHaveLength(1);
-    await expect(server).toReceiveMessage(req2);
+    const postsAfter = (global.fetch as jest.Mock).mock.calls.filter(
+      (call) => call[1].method === 'POST'
+    );
+    expect(JSON.parse(postsAfter[1][1].body)).toEqual([
+      {
+        notificationId: emailInAppPreference.notificationId,
+        channel: 'EMAIL',
+        state: true
+      }
+    ]);
   });
 
   test('given preference, clicking subtoggle changes the subtoggle and sends correct patch request', async () => {
     notificationapi.showUserPreferences();
-    await server.nextMessage;
     notificationapi.renderPreferences([
       {
         ...emailInAppPreference,
@@ -291,52 +283,41 @@ describe('websocket send & receives', () => {
       '.notificationapi-preferences-subtoggle[data-channel="EMAIL"] input'
     ).trigger('click');
 
-    const req: WS_UserPreferencesPatchRequest = {
-      route: 'user_preferences/patch_preferences',
-      payload: [
-        {
-          notificationId: emailInAppPreference.notificationId,
-          subNotificationId: 'subNotificationId1',
-          channelPreferences: [
-            {
-              channel: 'EMAIL',
-              state: false
-            }
-          ]
-        }
-      ]
-    };
-
     expect(
       $(
         '.notificationapi-preferences-subtoggle[data-channel="EMAIL"] input:not(:checked)'
       )
     ).toHaveLength(1);
-    await expect(server).toReceiveMessage(req);
+    const posts = (global.fetch as jest.Mock).mock.calls.filter(
+      (call) => call[1].method === 'POST'
+    );
+    expect(JSON.parse(posts[0][1].body)).toEqual([
+      {
+        notificationId: emailInAppPreference.notificationId,
+        subNotificationId: 'subNotificationId1',
+        channel: 'EMAIL',
+        state: false
+      }
+    ]);
     $(
       '.notificationapi-preferences-subtoggle[data-channel="EMAIL"] input'
     ).trigger('click');
-    const req2: WS_UserPreferencesPatchRequest = {
-      route: 'user_preferences/patch_preferences',
-      payload: [
-        {
-          notificationId: emailInAppPreference.notificationId,
-          subNotificationId: 'subNotificationId1',
-          channelPreferences: [
-            {
-              channel: 'EMAIL',
-              state: true
-            }
-          ]
-        }
-      ]
-    };
     expect(
       $(
         '.notificationapi-preferences-subtoggle[data-channel="EMAIL"] input:checked'
       )
     ).toHaveLength(1);
-    await expect(server).toReceiveMessage(req2);
+    const postsAfter = (global.fetch as jest.Mock).mock.calls.filter(
+      (call) => call[1].method === 'POST'
+    );
+    expect(JSON.parse(postsAfter[1][1].body)).toEqual([
+      {
+        notificationId: emailInAppPreference.notificationId,
+        subNotificationId: 'subNotificationId1',
+        channel: 'EMAIL',
+        state: true
+      }
+    ]);
   });
 });
 
